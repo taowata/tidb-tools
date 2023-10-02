@@ -16,6 +16,7 @@ package utils
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -32,6 +33,7 @@ import (
 	"github.com/pingcap/tidb-tools/sync_diff_inspector/chunk"
 	"github.com/pingcap/tidb/parser/model"
 	"github.com/pingcap/tidb/parser/mysql"
+	"github.com/pingcap/tidb/types"
 	"go.uber.org/zap"
 )
 
@@ -187,6 +189,11 @@ func GenerateReplaceDML(data map[string]*dbutil.ColumnData, table *model.TableIn
 			continue
 		}
 
+		if needHexEncode(col.FieldType) {
+			hexStr := hex.EncodeToString(data[col.Name.O].Data)
+			values = append(values, fmt.Sprintf("UNHEX('%s')", hexStr))
+			continue
+		}
 		if NeedQuotes(col.FieldType.GetType()) {
 			values = append(values, fmt.Sprintf("'%s'", strings.Replace(string(data[col.Name.O].Data), "'", "\\'", -1)))
 		} else {
@@ -219,6 +226,9 @@ func GenerateReplaceDMLWithAnnotation(source, target map[string]*dbutil.ColumnDa
 
 		if data1.IsNull {
 			value1 = "NULL"
+		} else if needHexEncode(col.FieldType) {
+			hexStr := hex.EncodeToString(data1.Data)
+			value1 = fmt.Sprintf("UNHEX('%s')", hexStr)
 		} else {
 			if NeedQuotes(col.FieldType.GetType()) {
 				value1 = fmt.Sprintf("'%s'", strings.Replace(string(data1.Data), "'", "\\'", -1))
@@ -240,6 +250,9 @@ func GenerateReplaceDMLWithAnnotation(source, target map[string]*dbutil.ColumnDa
 
 		if data2.IsNull {
 			values2 = append(values2, "NULL")
+		} else if needHexEncode(col.FieldType) {
+			hexStr := hex.EncodeToString(data2.Data)
+			values2 = append(values2, fmt.Sprintf("UNHEX('%s')", hexStr))
 		} else {
 			if NeedQuotes(col.FieldType.GetType()) {
 				values2 = append(values2, fmt.Sprintf("'%s'", strings.Replace(string(data2.Data), "'", "\\'", -1)))
@@ -274,6 +287,12 @@ func GenerateDeleteDML(data map[string]*dbutil.ColumnData, table *model.TableInf
 
 		if data[col.Name.O].IsNull {
 			kvs = append(kvs, fmt.Sprintf("%s is NULL", dbutil.ColumnName(col.Name.O)))
+			continue
+		}
+		// Check if the column type is a binary string, if it is, encode the value as a hex string
+		if needHexEncode(col.FieldType) {
+			hexStr := hex.EncodeToString(data[col.Name.O].Data)
+			kvs = append(kvs, fmt.Sprintf("%s = UNHEX('%s')", dbutil.ColumnName(col.Name.O), hexStr))
 			continue
 		}
 
@@ -501,6 +520,10 @@ func CompareStruct(upstreamTableInfos []*model.TableInfo, downstreamTableInfo *m
 // NeedQuotes determines whether an escape character is required for `'`.
 func NeedQuotes(tp byte) bool {
 	return !(dbutil.IsNumberType(tp) || dbutil.IsFloatType(tp))
+}
+
+func needHexEncode(ft types.FieldType) bool {
+	return mysql.HasBinaryFlag(ft.GetFlag()) && types.IsTypeChar(ft.GetType())
 }
 
 // CompareData compare two row datas.
