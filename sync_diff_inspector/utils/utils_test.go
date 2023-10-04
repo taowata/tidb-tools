@@ -16,6 +16,7 @@ package utils
 import (
 	"context"
 	"database/sql/driver"
+	"encoding/hex"
 	"fmt"
 	"testing"
 	"time"
@@ -353,6 +354,47 @@ func TestGenerateSQLs(t *testing.T) {
 	deleteSQL = GenerateDeleteDML(rowsData, tableInfo, "diff_test")
 	require.Equal(t, replaceSQL, "REPLACE INTO `diff_test`.`atest`(`id`,`name`,`birthday`,`update_time`,`money`) VALUES (NULL,'a\\'a','2018-01-01 00:00:00','10:10:10',11.1111);")
 	require.Equal(t, deleteSQL, "DELETE FROM `diff_test`.`atest` WHERE `id` is NULL AND `name` = 'a\\'a' AND `birthday` = '2018-01-01 00:00:00' AND `update_time` = '10:10:10' AND `money` = 11.1111 LIMIT 1;")
+}
+
+func TestGenerateSQLsWithUNHEX(t *testing.T) {
+	createTableSQL := "CREATE TABLE `diff_test`.`atest` (`id` binary(16), `password_hash` varbinary(64), `char_col` char(10), primary key(`id`))"
+	tableInfo, err := dbutil.GetTableInfoBySQL(createTableSQL, parser.New())
+	require.NoError(t, err)
+
+	id := []byte("id")
+	passwordHash := []byte("password_hash")
+	rowsData := map[string]*dbutil.ColumnData{
+		"id":            {Data: id, IsNull: false},
+		"password_hash": {Data: passwordHash, IsNull: false},
+		"char_col":      {Data: []byte("foobar"), IsNull: false},
+	}
+	hexID := hex.EncodeToString(id)
+	hexPassword := hex.EncodeToString(passwordHash)
+
+	replaceSQL := GenerateReplaceDML(rowsData, tableInfo, "diff_test")
+	deleteSQL := GenerateDeleteDML(rowsData, tableInfo, "diff_test")
+	require.Equal(t, fmt.Sprintf("REPLACE INTO `diff_test`.`atest`(`id`,`password_hash`,`char_col`) VALUES (UNHEX('%s'),UNHEX('%s'),'foobar');", hexID, hexPassword), replaceSQL)
+	require.Equal(t, fmt.Sprintf("DELETE FROM `diff_test`.`atest` WHERE `id` = UNHEX('%s') AND `password_hash` = UNHEX('%s') AND `char_col` = 'foobar' LIMIT 1;", hexID, hexPassword), deleteSQL)
+
+	// test with annotation
+	fixedPasswordHash := []byte("new_password_hash")
+	fixedData := map[string]*dbutil.ColumnData{
+		"id":            {Data: id, IsNull: false},
+		"password_hash": {Data: fixedPasswordHash, IsNull: false},
+		"char_col":      {Data: []byte("barfoo"), IsNull: false},
+	}
+	hexFixedPassword := hex.EncodeToString(fixedPasswordHash)
+
+	replaceSQLWithAnnotation := GenerateReplaceDMLWithAnnotation(fixedData, rowsData, tableInfo, "diff_test")
+	require.Equal(t, "/*\n"+
+		"  DIFF COLUMNS ╏               `PASSWORD HASH`               ╏ `CHAR COL`  \n"+
+		"╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╋╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╋╍╍╍╍╍╍╍╍╍╍╍╍╍\n"+
+		"  source data  ╏ UNHEX('6e65775f70617373776f72645f68617368') ╏ 'barfoo'    \n"+
+		"╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╋╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╋╍╍╍╍╍╍╍╍╍╍╍╍╍\n"+
+		"  target data  ╏ UNHEX('70617373776f72645f68617368')         ╏ 'foobar'    \n"+
+		"╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╋╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╋╍╍╍╍╍╍╍╍╍╍╍╍╍\n"+
+		"*/\n"+fmt.Sprintf("REPLACE INTO `diff_test`.`atest`(`id`,`password_hash`,`char_col`) VALUES (UNHEX('%s'),UNHEX('%s'),'barfoo');",
+		hexID, hexFixedPassword), replaceSQLWithAnnotation)
 }
 
 func TestResetColumns(t *testing.T) {
